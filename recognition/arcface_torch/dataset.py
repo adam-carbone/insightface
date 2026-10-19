@@ -69,6 +69,11 @@ def get_dataloader(
     else:
         init_fn = partial(worker_init_fn, num_workers=num_workers, rank=rank, seed=seed)
 
+    def collate_fn(batch):
+        imgs = torch.stack([item[0] for item in batch])
+        labels = torch.stack([item[1] for item in batch])
+        return imgs, labels
+
     train_loader = DataLoader(
         dataset=train_set,
         batch_size=batch_size,
@@ -77,8 +82,7 @@ def get_dataloader(
         pin_memory=True,
         drop_last=True,
         worker_init_fn=init_fn,
-        prefetch_factor=2 if num_workers > 0 else None,
-        persistent_workers=num_workers > 0,
+        collate_fn=collate_fn,
     )
 
     return train_loader
