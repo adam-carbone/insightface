@@ -72,7 +72,7 @@ def get_dataloader(
 
     def collate_fn(batch):
         imgs = torch.stack([item[0] for item in batch])
-        labels = torch.stack([item[1] for item in batch])
+        labels = torch.tensor([item[1] for item in batch], dtype=torch.long)
         return imgs, labels
 
     train_loader = DataLoader(
