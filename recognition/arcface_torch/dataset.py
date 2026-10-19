@@ -4,7 +4,13 @@ import queue as Queue
 import threading
 from typing import Iterable
 
-import mxnet as mx
+try:
+    import mxnet as mx
+    HAS_MXNET = True
+except ImportError:
+    mx = None
+    HAS_MXNET = False
+
 import numpy as np
 import torch
 from functools import partial
@@ -35,7 +41,7 @@ def get_dataloader(
         train_set = SyntheticDataset()
         dali = False
 
-    # Mxnet RecordIO
+    # Mxnet RecordIO (legacy format — requires mxnet)
     elif os.path.exists(rec) and os.path.exists(idx):
         train_set = MXFaceDataset(root_dir=root_dir, local_rank=local_rank)
 
@@ -63,8 +69,7 @@ def get_dataloader(
     else:
         init_fn = partial(worker_init_fn, num_workers=num_workers, rank=rank, seed=seed)
 
-    train_loader = DataLoaderX(
-        local_rank=local_rank,
+    train_loader = DataLoader(
         dataset=train_set,
         batch_size=batch_size,
         sampler=train_sampler,
@@ -72,70 +77,20 @@ def get_dataloader(
         pin_memory=True,
         drop_last=True,
         worker_init_fn=init_fn,
+        prefetch_factor=2 if num_workers > 0 else None,
+        persistent_workers=num_workers > 0,
     )
 
     return train_loader
 
-class BackgroundGenerator(threading.Thread):
-    def __init__(self, generator, local_rank, max_prefetch=6):
-        super(BackgroundGenerator, self).__init__()
-        self.queue = Queue.Queue(max_prefetch)
-        self.generator = generator
-        self.local_rank = local_rank
-        self.daemon = True
-        self.start()
-
-    def run(self):
-        torch.cuda.set_device(self.local_rank)
-        for item in self.generator:
-            self.queue.put(item)
-        self.queue.put(None)
-
-    def next(self):
-        next_item = self.queue.get()
-        if next_item is None:
-            raise StopIteration
-        return next_item
-
-    def __next__(self):
-        return self.next()
-
-    def __iter__(self):
-        return self
-
-
-class DataLoaderX(DataLoader):
-
-    def __init__(self, local_rank, **kwargs):
-        super(DataLoaderX, self).__init__(**kwargs)
-        self.stream = torch.cuda.Stream(local_rank)
-        self.local_rank = local_rank
-
-    def __iter__(self):
-        self.iter = super(DataLoaderX, self).__iter__()
-        self.iter = BackgroundGenerator(self.iter, self.local_rank)
-        self.preload()
-        return self
-
-    def preload(self):
-        self.batch = next(self.iter, None)
-        if self.batch is None:
-            return None
-        with torch.cuda.stream(self.stream):
-            for k in range(len(self.batch)):
-                self.batch[k] = self.batch[k].to(device=self.local_rank, non_blocking=True)
-
-    def __next__(self):
-        torch.cuda.current_stream().wait_stream(self.stream)
-        batch = self.batch
-        if batch is None:
-            raise StopIteration
-        self.preload()
-        return batch
-
 
 class MXFaceDataset(Dataset):
     def __init__(self, root_dir, local_rank):
+        if not HAS_MXNET:
+            raise ImportError(
+                "MXFaceDataset requires mxnet, which is retired and has no Python 3.9+ wheels. "
+                "Convert your dataset to ImageFolder format or install mxnet on Python <= 3.8."
+            )
         super(MXFaceDataset, self).__init__()
         self.transform = transforms.Compose(
             [transforms.ToPILImage(),
@@ -194,7 +149,7 @@ def dali_data_iter(
     batch_size: int, rec_file: str, idx_file: str, num_threads: int,
     initial_fill=32768, random_shuffle=True,
     prefetch_queue_depth=1, local_rank=0, name="reader",
-    mean=(127.5, 127.5, 127.5), 
+    mean=(127.5, 127.5, 127.5),
     std=(127.5, 127.5, 127.5),
     dali_aug=False
     ):
@@ -246,7 +201,7 @@ def dali_data_iter(
     condition_flip = fn.random.coin_flip(probability=0.5)
     with pipe:
         jpegs, labels = fn.readers.mxnet(
-            path=rec_file, index_path=idx_file, initial_fill=initial_fill, 
+            path=rec_file, index_path=idx_file, initial_fill=initial_fill,
             num_shards=world_size, shard_id=rank,
             random_shuffle=random_shuffle, pad_last_batch=False, name=name)
         images = fn.decoders.image(jpegs, device="mixed", output_type=types.RGB)
@@ -264,11 +219,11 @@ def dali_data_iter(
     return DALIWarper(DALIClassificationIterator(pipelines=[pipe], reader_name=name, ))
 
 
-@torch.no_grad()
 class DALIWarper(object):
     def __init__(self, dali_iter):
         self.iter = dali_iter
 
+    @torch.no_grad()
     def __next__(self):
         data_dict = self.iter.__next__()[0]
         tensor_data = data_dict['data'].cuda()

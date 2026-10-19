@@ -1,11 +1,18 @@
-from torch.optim.lr_scheduler import _LRScheduler
-from torch.optim import SGD
-import torch
+import inspect
 import warnings
+
+import torch
+from torch.optim import SGD
+from torch.optim.lr_scheduler import _LRScheduler
+
 
 class PolynomialLRWarmup(_LRScheduler):
     def __init__(self, optimizer, warmup_iters, total_iters=5, power=1.0, last_epoch=-1, verbose=False):
-        super().__init__(optimizer, last_epoch=last_epoch, verbose=verbose)
+        # verbose was removed from _LRScheduler in PyTorch 2.4
+        if 'verbose' in inspect.signature(_LRScheduler.__init__).parameters:
+            super().__init__(optimizer, last_epoch=last_epoch, verbose=verbose)
+        else:
+            super().__init__(optimizer, last_epoch=last_epoch)
         self.total_iters = total_iters
         self.power = power
         self.warmup_iters = warmup_iters

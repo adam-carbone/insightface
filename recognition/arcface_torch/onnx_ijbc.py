@@ -4,7 +4,12 @@ import pickle
 import timeit
 
 import cv2
-import mxnet as mx
+try:
+    import mxnet as mx
+    HAS_MXNET = True
+except ImportError:
+    mx = None
+    HAS_MXNET = False
 import numpy as np
 import pandas as pd
 import prettytable
